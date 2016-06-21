@@ -41,11 +41,11 @@ import static org.bytedeco.javacpp.cuda.*;
 import static org.bytedeco.javacpp.cudnn.*;
 
 /**
- * cuDNN-based convolution layer
+ * cuDNN-based helper for the convolution layer.
  *
  * @author saudet
  */
-public class CudnnConvolutionLayer extends ConvolutionLayer {
+public class CudnnConvolutionHelper implements ConvolutionHelper {
 
     static void checkCuda(int error) {
         if (error != cudaSuccess) {
@@ -119,18 +119,9 @@ public class CudnnConvolutionLayer extends ConvolutionLayer {
     FloatPointer alpha = new FloatPointer(1.0f);
     FloatPointer beta  = new FloatPointer(0.0f);
 
-    public CudnnConvolutionLayer(NeuralNetConfiguration conf) {
-        super(conf);
-    }
-
-    public CudnnConvolutionLayer(NeuralNetConfiguration conf, INDArray input) {
-        super(conf, input);
-    }
-
     @Override
-    public Pair<Gradient, INDArray> backpropGradient(INDArray epsilon) {
-        INDArray weights = getParam(ConvolutionParamInitializer.WEIGHT_KEY);
-
+    public Pair<Gradient, INDArray> backpropGradient(INDArray input, INDArray weights, INDArray delta,
+            int[] kernel, int[] strides, int[] pad, INDArray biasGradView, INDArray weightGradView, String afn) {
         int miniBatch = input.size(0);
         int inH = input.size(2);
         int inW = input.size(3);
@@ -140,27 +131,8 @@ public class CudnnConvolutionLayer extends ConvolutionLayer {
         int kH = weights.size(2);
         int kW = weights.size(3);
 
-        int[] kernel = layerConf().getKernelSize();
-        int[] strides = layerConf().getStride();
-        int[] pad = layerConf().getPadding();
-
         int outH = Convolution.outSize(inH, kernel[0], strides[0], pad[0],false);
         int outW = Convolution.outSize(inW, kernel[1], strides[1], pad[1], false);
-
-
-        INDArray biasGradView = gradientViews.get(ConvolutionParamInitializer.BIAS_KEY);
-        INDArray weightGradView = gradientViews.get(ConvolutionParamInitializer.WEIGHT_KEY);    //4d, c order. Shape: [outDepth,inDepth,kH,kW]
-        INDArray delta;
-        String afn = conf.getLayer().getActivationFunction();
-
-        if("identity".equals(afn)){
-            delta = epsilon;    //avoid doing .muli with 1s
-        } else {
-            INDArray sigmaPrimeZ = preOutput(true);
-            Nd4j.getExecutioner().execAndReturn(Nd4j.getOpFactory().createTransform(
-                    afn, sigmaPrimeZ, conf.getExtraArgs()).derivative());
-            delta = sigmaPrimeZ.muli(epsilon);  //Current shape: [miniBatch,outD,outH,outW]
-        }
 
         if (!Shape.strideDescendingCAscendingF(delta)) {
             // apparently not supported by cuDNN
@@ -225,15 +197,8 @@ public class CudnnConvolutionLayer extends ConvolutionLayer {
         return new Pair<>(retGradient,epsNext);
     }
 
-    public INDArray preOutput(boolean training) {
-        INDArray weights = getParam(ConvolutionParamInitializer.WEIGHT_KEY);
-        INDArray bias = getParam(ConvolutionParamInitializer.BIAS_KEY);
-        if(conf.isUseDropConnect() && training) {
-            if (conf.getLayer().getDropOut() > 0) {
-                weights = Dropout.applyDropConnect(this, ConvolutionParamInitializer.WEIGHT_KEY);
-            }
-        }
-
+    @Override
+    public INDArray preOutput(INDArray input, INDArray weights, INDArray bias, int[] kernel, int[] strides, int[] pad) {
         int miniBatch = input.size(0);
         int inH = input.size(2);
         int inW = input.size(3);
@@ -242,13 +207,6 @@ public class CudnnConvolutionLayer extends ConvolutionLayer {
         int inDepth = weights.size(1);
         int kH = weights.size(2);
         int kW = weights.size(3);
-
-        int[] kernel = layerConf().getKernelSize();
-        int[] strides = layerConf().getStride();
-        int[] pad = layerConf().getPadding();
-
-        int outH = Convolution.outSize(inH, kernel[0], strides[0], pad[0],false);
-        int outW = Convolution.outSize(inW, kernel[1], strides[1], pad[1], false);
 
         int[] srcStride = input.stride();
         checkCudnn(cudnnSetTensor4dDescriptorEx(cudnnContext.srcTensorDesc, dataType, miniBatch, inDepth, inH, inW,
@@ -297,19 +255,14 @@ public class CudnnConvolutionLayer extends ConvolutionLayer {
     }
 
     @Override
-    public INDArray activate(boolean training) {
-        if(input == null)
-            throw new IllegalArgumentException("No null input allowed");
-        applyDropOutIfNecessary(training);
-
-        INDArray z = preOutput(training);
+    public INDArray activate(INDArray z, String afn) {
         INDArray activation = z;
 
         Allocator allocator = AtomicAllocator.getInstance();
         CudaContext context = allocator.getFlowController().prepareAction(z);
         Pointer dstData = allocator.getPointer(z, context);
 
-        switch (conf.getLayer().getActivationFunction()) {
+        switch (afn) {
             case "identity":
                 break;
             case "sigmoid":
@@ -333,7 +286,7 @@ public class CudnnConvolutionLayer extends ConvolutionLayer {
                         CUDNN_SOFTMAX_MODE_CHANNEL, alpha, cudnnContext.dstTensorDesc, dstData, beta, cudnnContext.dstTensorDesc, dstData));
                 break;
             default:
-                activation = Nd4j.getExecutioner().execAndReturn(Nd4j.getOpFactory().createTransform(conf.getLayer().getActivationFunction(), z));
+                activation = null;
         }
 
         allocator.registerAction(context, z);

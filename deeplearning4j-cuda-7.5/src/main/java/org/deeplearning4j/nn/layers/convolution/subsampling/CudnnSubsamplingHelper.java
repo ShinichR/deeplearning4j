@@ -22,6 +22,7 @@ import org.bytedeco.javacpp.Pointer;
 import org.deeplearning4j.berkeley.Pair;
 import org.deeplearning4j.nn.api.Layer;
 import org.deeplearning4j.nn.conf.NeuralNetConfiguration;
+import org.deeplearning4j.nn.conf.layers.SubsamplingLayer.PoolingType;
 import org.deeplearning4j.nn.gradient.DefaultGradient;
 import org.deeplearning4j.nn.gradient.Gradient;
 import org.deeplearning4j.nn.layers.BaseLayer;
@@ -41,11 +42,11 @@ import static org.bytedeco.javacpp.cuda.*;
 import static org.bytedeco.javacpp.cudnn.*;
 
 /**
- * cuDNN-based subsampling layer.
+ * cuDNN-based helper for the subsampling layer.
  *
  * @author saudet
  */
-public class CudnnSubsamplingLayer extends SubsamplingLayer {
+public class CudnnSubsamplingHelper implements SubsamplingHelper {
 
     static void checkCuda(int error) {
         if (error != cudaSuccess) {
@@ -107,24 +108,13 @@ public class CudnnSubsamplingLayer extends SubsamplingLayer {
     FloatPointer alpha = new FloatPointer(1.0f);
     FloatPointer beta  = new FloatPointer(0.0f);
 
-    public CudnnSubsamplingLayer(NeuralNetConfiguration conf) {
-        super(conf);
-    }
-
-    public CudnnSubsamplingLayer(NeuralNetConfiguration conf, INDArray input) {
-        super(conf, input);
-    }
-
     @Override
-    public Pair<Gradient, INDArray> backpropGradient(INDArray epsilon) {
+    public Pair<Gradient, INDArray> backpropGradient(INDArray input, INDArray epsilon,
+            int[] kernel, int[] strides, int[] pad, PoolingType poolingType) {
         int miniBatch = input.size(0);
         int depth = input.size(1);
         int inH = input.size(2);
         int inW = input.size(3);
-
-        int[] kernel = layerConf().getKernelSize();
-        int[] strides = layerConf().getStride();
-        int[] pad = layerConf().getPadding();
 
         int outH = Convolution.outSize(inH, kernel[0], strides[0], pad[0],false);
         int outW = Convolution.outSize(inW, kernel[1], strides[1], pad[1], false);
@@ -137,7 +127,7 @@ public class CudnnSubsamplingLayer extends SubsamplingLayer {
         //Epsilons out shape: [miniBatch, depth, inH, inW]
 
         int poolingMode;
-        switch(layerConf().getPoolingType()) {
+        switch(poolingType) {
             case AVG:
                 poolingMode = CUDNN_POOLING_AVERAGE_COUNT_INCLUDE_PADDING;
                 break;
@@ -147,10 +137,10 @@ public class CudnnSubsamplingLayer extends SubsamplingLayer {
             case NONE:
                 return new Pair<>(retGradient, epsilon);
             default:
-                return super.backpropGradient(epsilon);
+                return null;
         }
 
-        INDArray z = activate(true);
+        INDArray z = activate(input, true, kernel, strides, pad, poolingType);
 
         if (!Shape.strideDescendingCAscendingF(epsilon)) {
             // apparently not supported by cuDNN
@@ -188,25 +178,18 @@ public class CudnnSubsamplingLayer extends SubsamplingLayer {
 
 
     @Override
-    public INDArray activate(boolean training) {
-        if(training && conf.getLayer().getDropOut() > 0) {
-            Dropout.applyDropout(input,conf.getLayer().getDropOut());
-        }
-
+    public INDArray activate(INDArray input, boolean training,
+            int[] kernel, int[] strides, int[] pad, PoolingType poolingType) {
         int miniBatch = input.size(0);
         int inDepth = input.size(1);
         int inH = input.size(2);
         int inW = input.size(3);
 
-        int[] kernel = layerConf().getKernelSize();
-        int[] strides = layerConf().getStride();
-        int[] pad = layerConf().getPadding();
-
         int outH = Convolution.outSize(inH, kernel[0], strides[0], pad[0],false);
         int outW = Convolution.outSize(inW, kernel[1], strides[1], pad[1], false);
 
         int poolingMode;
-        switch(layerConf().getPoolingType()) {
+        switch(poolingType) {
             case AVG:
                 poolingMode = CUDNN_POOLING_AVERAGE_COUNT_INCLUDE_PADDING;
                 break;
@@ -216,7 +199,7 @@ public class CudnnSubsamplingLayer extends SubsamplingLayer {
             case NONE:
                 return input;
             default:
-                return super.activate(training);
+                return null;
         }
 
         int[] srcStride = input.stride();

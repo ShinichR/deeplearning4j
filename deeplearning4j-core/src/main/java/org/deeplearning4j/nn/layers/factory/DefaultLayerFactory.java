@@ -27,8 +27,6 @@ import org.deeplearning4j.nn.layers.feedforward.embedding.EmbeddingLayer;
 import org.deeplearning4j.nn.params.DefaultParamInitializer;
 import org.deeplearning4j.optimize.api.IterationListener;
 import org.nd4j.linalg.api.ndarray.INDArray;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.*;
 
@@ -38,7 +36,6 @@ import java.util.*;
  * @author Adam Gibson
  */
 public class DefaultLayerFactory implements LayerFactory {
-    protected static final Logger log = LoggerFactory.getLogger(DefaultLayerFactory.class);
 
     protected org.deeplearning4j.nn.conf.layers.Layer layerConfig;
 
@@ -79,29 +76,10 @@ public class DefaultLayerFactory implements LayerFactory {
             return new org.deeplearning4j.nn.layers.OutputLayer(conf);
         if (layerConfig instanceof org.deeplearning4j.nn.conf.layers.RnnOutputLayer)
             return new org.deeplearning4j.nn.layers.recurrent.RnnOutputLayer(conf);
-        if (layerConfig instanceof org.deeplearning4j.nn.conf.layers.ConvolutionLayer) {
-            try {
-                Class<?> c = Class.forName("org.deeplearning4j.nn.layers.convolution.CudnnConvolutionLayer");
-                return c.asSubclass(org.deeplearning4j.nn.layers.convolution.ConvolutionLayer.class)
-                        .getConstructor(NeuralNetConfiguration.class).newInstance(conf);
-            } catch (Throwable t) {
-                if (!(t instanceof ClassNotFoundException)) {
-                    log.warn("Could not load CudnnConvolutionLayer", t);
-                }
-                return new org.deeplearning4j.nn.layers.convolution.ConvolutionLayer(conf);
-            }
-        }
+        if (layerConfig instanceof org.deeplearning4j.nn.conf.layers.ConvolutionLayer)
+            return new org.deeplearning4j.nn.layers.convolution.ConvolutionLayer(conf);
         if (layerConfig instanceof org.deeplearning4j.nn.conf.layers.SubsamplingLayer)
-            try {
-                Class<?> c = Class.forName("org.deeplearning4j.nn.layers.convolution.subsampling.CudnnSubsamplingLayer");
-                return c.asSubclass(org.deeplearning4j.nn.layers.convolution.subsampling.SubsamplingLayer.class)
-                        .getConstructor(NeuralNetConfiguration.class).newInstance(conf);
-            } catch (Throwable t) {
-                if (!(t instanceof ClassNotFoundException)) {
-                    log.warn("Could not load CudnnSubsamplingLayer", t);
-                }
-                return new org.deeplearning4j.nn.layers.convolution.subsampling.SubsamplingLayer(conf);
-            }
+            return new org.deeplearning4j.nn.layers.convolution.subsampling.SubsamplingLayer(conf);
         if (layerConfig instanceof org.deeplearning4j.nn.conf.layers.BatchNormalization)
             return new org.deeplearning4j.nn.layers.normalization.BatchNormalization(conf);
         if (layerConfig instanceof org.deeplearning4j.nn.conf.layers.LocalResponseNormalization)
