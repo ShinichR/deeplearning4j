@@ -73,6 +73,8 @@ public class CudnnConvolutionHelper implements ConvolutionHelper {
         cudnnFilterStruct filterDesc = new cudnnFilterStruct();
         cudnnConvolutionStruct convDesc = new cudnnConvolutionStruct();
         cudnnActivationStruct activationDesc = new cudnnActivationStruct();
+        long workSpaceSize = 0;
+        Pointer workSpace = null;
 
         CudnnContext() {
             createHandles();
@@ -102,6 +104,9 @@ public class CudnnConvolutionHelper implements ConvolutionHelper {
         }
 
         void destroyHandles() {
+            if (workSpace != null) {
+                checkCuda(cudaFree(workSpace));
+            }
             checkCudnn(cudnnDestroyActivationDescriptor(activationDesc));
             checkCudnn(cudnnDestroyConvolutionDescriptor(convDesc));
             checkCudnn(cudnnDestroyFilterDescriptor(filterDesc));
@@ -118,6 +123,7 @@ public class CudnnConvolutionHelper implements ConvolutionHelper {
     int tensorFormat = CUDNN_TENSOR_NCHW;
     FloatPointer alpha = new FloatPointer(1.0f);
     FloatPointer beta  = new FloatPointer(0.0f);
+    SizeTPointer sizeInBytes = new SizeTPointer(1);
 
     @Override
     public Pair<Gradient, INDArray> backpropGradient(INDArray input, INDArray weights, INDArray delta,
@@ -163,8 +169,6 @@ public class CudnnConvolutionHelper implements ConvolutionHelper {
         Pointer deltaData = allocator.getPointer(delta, context);
         Pointer dstData = allocator.getPointer(epsNext, context);
 
-        SizeTPointer sizeInBytes = new SizeTPointer(1);
-        Pointer workSpace = null;
         checkCudnn(cudnnSetTensor4dDescriptorEx(cudnnContext.dstTensorDesc, dataType, miniBatch, inDepth, inH, inW,
                 dstStride[0], dstStride[1], dstStride[2], dstStride[3]));
         checkCudnn(cudnnGetConvolutionBackwardFilterWorkspaceSize(cudnnContext, cudnnContext.srcTensorDesc,
@@ -173,20 +177,22 @@ public class CudnnConvolutionHelper implements ConvolutionHelper {
         checkCudnn(cudnnGetConvolutionBackwardDataWorkspaceSize(cudnnContext, cudnnContext.filterDesc,
                 cudnnContext.deltaTensorDesc, cudnnContext.convDesc, cudnnContext.dstTensorDesc, algo[0], sizeInBytes));
         long sizeInBytes2 = sizeInBytes.get(0);
-        if (sizeInBytes1 > 0 || sizeInBytes2 > 0) {
-            checkCuda(cudaMalloc(workSpace = new Pointer(), Math.max(sizeInBytes1, sizeInBytes2)));
+        if (sizeInBytes1 > cudnnContext.workSpaceSize || sizeInBytes2 > cudnnContext.workSpaceSize) {
+            if (cudnnContext.workSpace != null) {
+                checkCuda(cudaFree(cudnnContext.workSpace));
+            } else {
+                cudnnContext.workSpace = new Pointer();
+            }
+            cudnnContext.workSpaceSize = Math.max(sizeInBytes1, sizeInBytes2);
+            checkCuda(cudaMalloc(cudnnContext.workSpace, cudnnContext.workSpaceSize));
         }
 
         checkCudnn(cudnnSetTensor4dDescriptor(cudnnContext.biasTensorDesc, tensorFormat, dataType, 1, outDepth, 1, 1));
         checkCudnn(cudnnConvolutionBackwardBias(cudnnContext, alpha, cudnnContext.deltaTensorDesc, deltaData, beta, cudnnContext.biasTensorDesc, biasGradData));
         checkCudnn(cudnnConvolutionBackwardFilter(cudnnContext, alpha, cudnnContext.srcTensorDesc, srcData, cudnnContext.deltaTensorDesc, deltaData,
-                cudnnContext.convDesc, algo[0], workSpace, sizeInBytes1, beta, cudnnContext.filterDesc, filterGradData));
+                cudnnContext.convDesc, algo[0], cudnnContext.workSpace, cudnnContext.workSpaceSize, beta, cudnnContext.filterDesc, filterGradData));
         checkCudnn(cudnnConvolutionBackwardData(cudnnContext, alpha, cudnnContext.filterDesc, filterData, cudnnContext.deltaTensorDesc, deltaData, cudnnContext.convDesc,
-                algo[0], workSpace, sizeInBytes2, beta, cudnnContext.dstTensorDesc, dstData));
-
-        if (workSpace != null) {
-            checkCuda(cudaFree(workSpace));
-        }
+                algo[0], cudnnContext.workSpace, cudnnContext.workSpaceSize, beta, cudnnContext.dstTensorDesc, dstData));
 
         allocator.registerAction(context, input, weights, weightGradView, biasGradView, delta, epsNext);
 
@@ -231,23 +237,23 @@ public class CudnnConvolutionHelper implements ConvolutionHelper {
         Pointer biasData = allocator.getPointer(bias, context);
         Pointer dstData = allocator.getPointer(z, context);
 
-        SizeTPointer sizeInBytes = new SizeTPointer(1);
-        Pointer workSpace = null;
         checkCudnn(cudnnGetConvolutionForwardWorkspaceSize(cudnnContext, cudnnContext.srcTensorDesc,
                 cudnnContext.filterDesc, cudnnContext.convDesc, cudnnContext.dstTensorDesc, algo[0], sizeInBytes));
-        if (sizeInBytes.get(0) > 0) {
-            checkCuda(cudaMalloc(workSpace = new Pointer(), sizeInBytes.get(0)));
+        if (sizeInBytes.get(0) > cudnnContext.workSpaceSize) {
+            if (cudnnContext.workSpace != null) {
+                checkCuda(cudaFree(cudnnContext.workSpace));
+            } else {
+                cudnnContext.workSpace = new Pointer();
+            }
+            cudnnContext.workSpaceSize = sizeInBytes.get(0);
+            checkCuda(cudaMalloc(cudnnContext.workSpace, cudnnContext.workSpaceSize));
         }
         checkCudnn(cudnnConvolutionForward(cudnnContext, alpha, cudnnContext.srcTensorDesc, srcData,
-                cudnnContext.filterDesc, filterData, cudnnContext.convDesc, algo[0], workSpace, sizeInBytes.get(0),
+                cudnnContext.filterDesc, filterData, cudnnContext.convDesc, algo[0], cudnnContext.workSpace, cudnnContext.workSpaceSize,
                 beta, cudnnContext.dstTensorDesc, dstData));
 
         checkCudnn(cudnnSetTensor4dDescriptor(cudnnContext.biasTensorDesc, tensorFormat, dataType, 1, c[0], 1, 1));
         checkCudnn(cudnnAddTensor(cudnnContext, alpha, cudnnContext.biasTensorDesc, biasData, alpha, cudnnContext.dstTensorDesc, dstData));
-
-        if (workSpace != null) {
-            checkCuda(cudaFree(workSpace));
-        }
 
         allocator.registerAction(context, input, weights, bias, z);
 
